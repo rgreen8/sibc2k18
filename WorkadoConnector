@@ -1,0 +1,800 @@
+{
+  title: 'Mercatus',
+  connection: {
+    fields: [
+      {
+        name: 'subdomain',
+        control_type: 'subdomain',
+        url: '.gomercatus.com',
+        hint: 'URL'
+      },
+      {
+        name: 'bearer',
+        control_type: 'password',
+        label: 'Bearer Token (Excluding "Bearer")'
+      }
+    ],
+
+    authorization: {
+      type: 'basic_auth',
+      credentials: ->(connection) {
+        headers('Authorization': "Bearer #{connection['bearer']}")
+      }
+    }
+  },
+
+  object_definitions: {
+    user: {
+      fields: ->() {
+        [
+          {
+            name: 'userId',
+            type: :integer
+          },
+          {
+            name: 'orgId',
+            type: :integer
+          },
+          {
+            name: 'firstName',
+          },
+          {
+            name: 'lastName',
+          },
+          {
+            name: 'email'
+          },
+          {
+            name: 'orgName'
+          }
+        ]
+      },
+    },
+    project: {
+      fields: -> (connection, preview_fields) {
+        [
+          {
+            name: 'shortName',
+          },
+          {
+            name: 'updatedBy',
+          },
+          {
+            name: 'portfolio',
+            type: :boolean
+          },
+          {
+            name: 'updatedAt',
+            type: :integer
+          },
+          {
+            name: 'updatedAtTimestamp',
+            type: :timestamp
+          },
+          {
+            name: 'projectId',
+          },
+        ]
+      }
+    },
+    projectInfo: {
+      fields: -> (connection, preview_fields) {
+        [
+          {
+            name: 'orgId',
+            type: :integer
+          },
+          {
+            name: 'projectId',
+            type: :integer
+          },
+          {
+            name: 'shortName',
+          },
+          {
+            name: 'isActive',
+            type: :boolean
+          }
+        ]
+      }
+    },
+    assumption: {
+      fields: -> () {
+        [
+          {
+            name: 'lb'
+          },
+          {
+            name: 'aid',
+            type: :integer
+          },
+          {
+            name: 'v'
+          }
+        ]
+      }
+    },
+    assumptions: {
+      fields: -> (connection, input_fields) {
+        fields = []
+        get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']['projectConfigVO']['assumptionList']
+          .map do |field|
+            if field['assumptionLabel']
+              fields << field
+            end
+          end
+        fields
+      }
+    },
+    syncResponse: {
+      fields: -> () {
+        [
+          {
+            name: 'currentSystemDate',
+            type: :timestamp
+          },
+          {
+            name: 'activeProjects',
+            type: :array,
+            of: :object,
+            properties: [{ name: 'id', type: :integer	}]
+          },
+          {
+            name: 'deletedProjects',
+            type: :array,
+            of: :object,
+            properties: [{ name: 'id', type: :integer	}]
+          }
+        ]
+      }
+    },
+    liteAssumptionMap: {
+      fields: -> (connection, preview_fields) {
+        preview_fields
+      }
+    },
+    lite_assumption_vo: {
+      fields: -> (connection, preview_fields) {
+        preview_fields
+      }
+    },
+    sfid: {
+      fields: ->() {
+        [
+          {
+            name: 'sfid'
+          }
+        ]
+      }
+    }
+  },
+
+  test: ->(connection) {
+    get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")
+  },
+
+  actions: {
+    get_user_info: {
+      execute: ->(connection, input) {
+        get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")
+      },
+      output_fields: ->(object_definitions) {
+        [
+          {
+            name: 'data',
+            type: :object,
+            properties: object_definitions['user']
+          }
+        ]
+      }
+    },
+
+    get_projects: {
+      execute: ->(connection, input) {
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        post("https://#{connection['subdomain']}.gomercatus.com/rest/projects/#{userInfo["orgId"]}")
+          .payload(
+             "configColumnStr": "",
+             "currentPageNo": "1",
+             "includePortfolio": false,
+             "searchString": nil,
+             "sortByColumn": nil,
+             "sortDirection": nil
+          )['data']
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          {
+            name: 'projectList',
+            type: :array,
+            of: :object,
+            properties: object_definitions['project']
+          }
+        ]
+      }
+    },
+
+    get_project_info: {
+      input_fields: ->(object_definitions) {
+          [
+          { name: "projectId", optional: false, type: :integer }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        project = get("https://#{connection['subdomain']}.gomercatus.com/rest/projects/projectInfo/#{input["projectId"]}")['data']
+      },
+
+      output_fields: ->(object_definitions) {
+        object_definitions['projectInfo'] unless object_definitions.blank?
+      }
+    },
+
+    get_project_by_id: {
+      input_fields: ->(object_definitions) {
+          [
+          { name: "projectId", optional: false, type: :integer }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        project = post("https://#{connection['subdomain']}.gomercatus.com/rest/projects/#{userInfo["orgId"]}")
+          .payload(
+            "configColumnStr": "",
+            "currentPageNo": "1",
+            "includePortfolio": false,
+            "searchString": input['projectId'],
+            "sortByColumn": nil,
+            "sortDirection": nil
+          )['data']['projectList']
+
+        if project.blank?
+          firstProject = nil
+        else
+          firstProject = project.first
+          updatedAt = (firstProject['updatedAt'].to_i / 1000).to_i
+          timeNow = Time.now.to_i
+          firstProject['updatedAtTimestamp'] = (Time.now - (timeNow - updatedAt)).utc
+        end
+        firstProject
+      },
+
+      output_fields: ->(object_definitions) {
+        object_definitions['project'] unless object_definitions.blank?
+      }
+    },
+
+    get_project_by_name: {
+      input_fields: ->(object_definitions) {
+          [
+            { name: "projectName", optional: false }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        project = post("https://#{connection['subdomain']}.gomercatus.com/rest/projects/#{userInfo["orgId"]}")
+          .payload(
+            "configColumnStr": "",
+            "currentPageNo": "1",
+            "includePortfolio": false,
+            "searchString": input['projectName'],
+            "sortByColumn": nil,
+            "sortDirection": nil
+          )['data']['projectList']
+
+        if project.blank?
+          firstProject = nil
+        else
+          firstProject = project.first
+          updatedAt = (firstProject['updatedAt'].to_i / 1000).to_i
+          timeNow = Time.now.to_i
+          firstProject['updatedAtTimestamp'] = (Time.now - (timeNow - updatedAt)).utc
+        end
+        firstProject
+      },
+
+      output_fields: ->(object_definitions) {
+        object_definitions['project'] unless object_definitions.blank?
+      }
+    },
+
+    create_project: {
+      input_fields: ->(object_definitions) {
+          [
+            { name: "shortName", optional: false }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        post("https://#{connection['subdomain']}.gomercatus.com/rest/projects")
+          .payload(
+             "shortName": input['shortName'],
+             "organizationId": userInfo['orgId']
+          )
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          {
+            name: 'data',
+            type: :object,
+            properties: object_definitions['project']
+          }
+        ]
+      }
+    },
+
+    restore_project: {
+      input_fields: ->(object_definitions) {
+          [
+            { name: "projectId", type: :integer, optional: false }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        post("https://#{connection['subdomain']}.gomercatus.com/rest/recycleBin/restore/project/#{input['projectId']}")
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          {
+            name: 'data',
+            type: :object,
+            properties: object_definitions['project']
+          }
+        ]
+      }
+    },
+    
+    delete_project: {
+      input_fields: ->(object_definitions) {
+          [
+            { name: "projectId", type: :integer, optional: false }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        delete("https://#{connection['subdomain']}.gomercatus.com/rest/projects/#{input['projectId']}")
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          {
+            name: 'data',
+            type: :object
+          }
+        ]
+      }
+    },
+
+    update_sync_time: {
+      input_fields: ->(object_definitions) {
+          [
+            { name: "projectId", type: :integer, optional: false },
+            { name: "updatedAt", label: "Updated At Timestamp (ms)", type: :integer, optional: false },
+            { name: "header", label: "Assumption Name", optional: false },
+            { name: "referenceName", label: "Reference Name (ie: SFDC_TO_M or M_TO_SFDC)", optional: false }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        puts input
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        orgId = userInfo['orgId']
+
+        assumptionId = ""
+        assumptionExists = false
+        assumptionList = userInfo['projectConfigVO']['assumptionList']
+        assumptionList.map do |field|
+          if field['header'] == input['header']
+            assumptionExists = true
+            assumptionId = field['assumptionId']
+          end
+        end
+        puts "assumptionExists: #{assumptionExists}"
+        puts "AssumptionId: #{assumptionId}"
+
+        if assumptionExists == false
+          assumptionId = post("https://#{connection['subdomain']}.gomercatus.com/rest/preferences/assumption")
+          .payload(
+            "activeInd": true,
+            "assumptionId": nil,
+            "assumptionLevel": "PROJECT",
+            "calculatedInd": false,
+            "categoryId": 599,
+            "categoryName": "Workato Sync",
+            "childId": nil,
+            "columnNumber": nil,
+            "commonlyUsed": false,
+            "consolidateExpr": "pc_n_a",
+            "createdAt": nil,
+            "createdBy": nil,
+            "currencySelection": "",
+            "defaultValue": "",
+            "destroyable": true,
+            "editTier": "2",
+            "excludeCopyProject": true,
+            "expression": nil,
+            "fieldFormat": "#",
+            "fieldPrecision": nil,
+            "fieldType": "numeric",
+            "fmsImpactInd": true,
+            "hasAccess": false,
+            "header": input['header'],
+            "helpText": "",
+            "ignoreUpdate": false,
+            "importantInd": true,
+            "isConfigColumn": true,
+            "isDocInternal": false,
+            "isModified": false,
+            "isOutput": false,
+            "label": input['header'],
+            "linkedAssumptionId": nil,
+            "linkedDocId": nil,
+            "mappedReferenceName": nil,
+            "max": nil,
+            "metric": "12",
+            "min": nil,
+            "noteExists": false,
+            "notes": "",
+            "orgId": orgId.to_s,
+            "parentAssumptionId": nil,
+            "parentId": nil,
+            "projectCreationInd": false,
+            "readOnly": false,
+            "referenceName": input['referenceName'],
+            "requiredInd": true,
+            "rowNumber": nil,
+            "selectOptions": "",
+            "slug": "",
+            "sourceTag": nil,
+            "unit": "",
+            "unit2": "",
+            "updatedAt": nil,
+            "updatedBy": nil,
+            "updatedByUserOrgId": nil,
+            "usedByAnalytics": false,
+            "userSelectInd": false,
+            "value": nil,
+            "value2": nil,
+            "viewTier": "2",
+            "weight": "1",
+            "wfCustomInd": false,
+            "wfTemplateField": nil
+          )['data']['assumptionId']
+        end
+
+        payload = [
+          {
+            "projectId": input["projectId"],
+            "id": assumptionId,
+            "oldValue": nil,
+            "value": input['updatedAt']
+          }
+        ]
+        post("https://#{connection['subdomain']}.gomercatus.com/rest/projectDetail/updateAssumptions/#{orgId}", payload)
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          {
+            name: 'data',
+            type: :array,
+            of: :object,
+            properties: object_definitions['assumption']
+          }
+        ]
+      }
+    },
+
+    get_assumptions: {
+      input_fields: ->(object_definitions) {
+          [
+            { name: "projectId", type: :integer, optional: false }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        assumptionList = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']['projectConfigVO']['assumptionList']
+
+        assumptionTypes = {}
+        assumptionList.map do |field|
+          if field['assumptionLabel'] != nil
+            assumptionTypes["_#{field['assumptionId']}_"] = field['fieldType']
+          end
+        end
+
+        assumptions = get("https://#{connection['subdomain']}.gomercatus.com/rest/projectDetail/assumptions/#{input["projectId"]}")['data']['liteAssumptionVOs']
+
+        sfdcAssumptions = { }
+        assumptions.each do |assumption|
+          if assumption['lb']
+            fieldType = assumptionTypes["_#{assumption['aid']}_"]
+            val = assumption['v']
+            if val.blank?
+              if fieldType == 'currency'
+                val = ""
+              end
+            else
+              if fieldType == 'date'
+                val = assumption['v'].to_date(format:"MM/DD/YYYY")
+              end
+            end
+            sfdcAssumptions["_#{assumption['aid']}_"] = val
+          end
+        end
+        sfdcAssumptions
+      },
+
+      output_fields: ->(object_definitions) {
+        mercatusAssumptions = object_definitions['assumptions']
+
+        outputs = []
+        mercatusAssumptions.sort{|a,b| a['assumptionLabel'] <=> b['assumptionLabel']}.map do |field|
+          output = {
+            name: "_#{field['assumptionId']}_",
+            label: field['assumptionLabel']
+          }
+          if field['fieldType'] == 'date'
+            output['type'] = :date
+          end
+          outputs << output
+        end
+        outputs
+      }
+    },
+
+    update_assumption_configuration: {
+      input_fields: ->(object_definitions) {
+          [
+            { name: "assumptionId", type: :integer, optional: false },
+            { name: "activeInd", type: :boolean, optional: true },
+            { name: "assumptionLevel", type: :string, optional: true },
+            { name: "calculatedInd", type: :boolean, optional: true },
+            { name: "categoryId", type: :string, optional: true },
+            { name: "categoryName", type: :string, optional: true },
+            { name: "childId", type: :integer, optional: true },
+            { name: "columnNumber", type: :integer, optional: true },
+            { name: "commonlyUsed", type: :boolean, optional: true },
+            { name: "consolidateExpr", type: :string, optional: true },
+            { name: "currencySelection", type: :string, optional: true },
+            { name: "defaultValue", type: :string, optional: true },
+            { name: "destroyable", type: :boolean, optional: true },
+            { name: "editTier", type: :string, optional: true },
+            { name: "excludeCopyProject", boolean: :integer, optional: true },
+            { name: "expression", type: :integer, optional: true },
+            { name: "fieldFormat", type: :string, optional: true },
+            { name: "fieldPrecision", type: :integer, optional: true },
+            { name: "fieldType", type: :string, optional: true },
+            { name: "fmsImpactInd", type: :boolean, optional: true },
+            { name: "hasAccess", type: :boolean, optional: true },
+            { name: "header", type: :string, optional: true },
+            { name: "helpText", type: :string, optional: true },
+            { name: "ignoreUpdate", type: :boolean, optional: true },
+            { name: "importantInd", type: :boolean, optional: true },
+            { name: "isConfigColumn", type: :boolean, optional: true },
+            { name: "isDocInternal", type: :boolean, optional: true },
+            { name: "isModified", type: :boolean, optional: true },
+            { name: "isOutput", type: :boolean, optional: true },
+            { name: "label", type: :string, optional: true },
+            { name: "linkedAssumptionId", type: :integer, optional: true },
+            { name: "linkedDocId", type: :integer, optional: true },
+            { name: "mappedReferenceName", type: :string, optional: true },
+            { name: "max", type: :integer, optional: true },
+            { name: "metric", type: :string, optional: true },
+            { name: "min", type: :integer, optional: true },
+            { name: "noteExists", type: :boolean, optional: true },
+            { name: "notes", type: :string, optional: true },
+            { name: "orgId", type: :string, optional: true },
+            { name: "parentAssumptionId", type: :integer, optional: true },
+            { name: "parentId", type: :integer, optional: true },
+            { name: "projectCreationInd", type: :boolean, optional: true },
+            { name: "readOnly", type: :boolean, optional: true },
+            { name: "referenceName", type: :string, optional: false },
+            { name: "requiredInd", type: :boolean, optional: true },
+            { name: "selectOptions", type: :string, optional: true },
+            { name: "slug", type: :string, optional: true },
+            { name: "sourceTag", type: :integer, optional: true },
+            { name: "unit", type: :string, optional: true },
+            { name: "unit2", type: :string, optional: true },
+            { name: "usedByAnalytics", type: :boolean, optional: true },
+            { name: "userSelectInd", type: :boolean, optional: true },
+            { name: "value", type: :integer, optional: true },
+            { name: "value2", type: :integer, optional: true },
+            { name: "viewTier", type: :string, optional: true },
+            { name: "weight", type: :string, optional: true },
+            { name: "wfCustomInd", type: :boolean, optional: true },
+            { name: "wfTemplateField", type: :integer, optional: true }
+          ]
+      },
+
+      execute: ->(connection, input) {
+        assimptionId = input['assumptionId'].to_i
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        currentAssumptions = get("https://#{connection['subdomain']}.gomercatus.com/rest/preferences/assumptions/customSummary/#{userInfo['orgId']}")['data']
+
+        payload = {}
+        currentAssumptions.map do |assumption|
+          if assumption["assumptionId"] == assimptionId
+            payload = assumption
+            input.map do |k,v|
+              puts k
+              payload[k] = v
+            end
+          end
+        end
+        puts payload
+
+        assumption = put("https://#{connection['subdomain']}.gomercatus.com/rest/preferences/assumption/#{assimptionId}", payload)
+      },
+
+      output_fields: ->(object_definitions) {
+      }
+    },
+    
+    update_assumptions: {
+      input_fields: ->(object_definitions) {
+        mercatusAssumptions = object_definitions['assumptions']
+        typeHash = {
+          'numeric' => 'number',
+          'currency' => 'number',
+          'text' => 'text',
+          'select' => 'text',
+          'orguserlist' => 'text',
+          'textarea' => 'text',
+          'yesno' => 'number',
+          'multiselect' => 'text',
+          'date' => 'number'
+        }
+
+        inputs = [
+          { name: "projectId", optional: false }
+        ]
+        mercatusAssumptions.sort{|a,b| a['assumptionLabel'] <=> b['assumptionLabel']}.map do |field|
+          inputs << {
+            name: "_#{field['assumptionId']}_",
+            label: field['assumptionLabel'],
+            control_type: typeHash[field['fieldType']],
+            optional: true
+          }
+        end
+        inputs
+      },
+
+      execute: ->(connection, input) {
+        assumptions = {}
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        orgId = userInfo['orgId']
+
+        assumptionList = userInfo['projectConfigVO']['assumptionList']
+        assumptionList.map do |field|
+          if field['assumptionLabel'] != nil
+            assumptions["_#{field['assumptionId']}_"] = field
+          end
+        end
+
+        payload = []
+        input.map do |k, v|
+          if assumptions[k].present?
+            field = assumptions[k]
+            fieldType = field['fieldType']
+            val = v
+            if fieldType == 'date'
+              if !v.blank?
+                val = v.to_date.strftime("%m/%d/%Y")
+              end
+            end
+            payload << {
+              "projectId": input["projectId"],
+              "id": field['assumptionId'],
+              "oldValue": nil,
+              "value": val
+            }
+          end
+        end
+
+        post("https://#{connection['subdomain']}.gomercatus.com/rest/projectDetail/updateAssumptions/#{orgId}", payload)
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          {
+            name: 'data',
+            type: :array,
+            of: :object,
+            properties: object_definitions['assumption']
+          }
+        ]
+      }
+    }
+  },
+
+  triggers: {
+    created__or_updated_projects: {
+      input_fields: ->(object_definitions) {
+          [
+            name: 'since',
+            type: :integer,
+            hint: 'Defaults to projects created after the recipe is first started (in milliseconds)'
+          ]
+      },
+      poll: ->(connection, input, last_updated_since) {
+        updated_since = last_updated_since || 0
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        projects = post("https://#{connection['subdomain']}.gomercatus.com/rest/projects/fetchProjectIdsForSyndate")
+          .payload(
+            "currentSystemDate": nil,
+            "synDate": updated_since,
+            "orgId": userInfo['orgId'],
+            "activeProjectIds": nil,
+            "deletedProjectIds": nil
+          )
+
+        project_details = projects['data']['activeProjectIds'].map do |projectId|
+          { "projectId" => projectId, "status" => "active" }
+        end
+
+        {
+          events: project_details,
+          next_poll: projects['data']['currentSystemDate'],
+          can_poll_more: false
+        }
+      },
+
+      dedup: ->(projects) {
+        rand()
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          { name: 'projectId', type: :integer }
+        ]
+      }
+    },
+    deleted_projects: {
+      input_fields: ->(object_definitions) {
+          [
+            name: 'since',
+            type: :integer,
+            hint: 'Defaults to projects created after the recipe is first started (in milliseconds)'
+          ]
+      },
+      poll: ->(connection, input, last_updated_since) {
+        updated_since = last_updated_since || 0
+        userInfo = get("https://#{connection['subdomain']}.gomercatus.com/rest/userInfo")['data']
+        projects = post("https://#{connection['subdomain']}.gomercatus.com/rest/projects/fetchProjectIdsForSyndate")
+          .payload(
+            "currentSystemDate": nil,
+            "synDate": updated_since,
+            "orgId": userInfo['orgId'],
+            "activeProjectIds": nil,
+            "deletedProjectIds": nil
+          )
+
+        project_details = projects['data']['deletedProjectIds'].map do |projectId|
+          { "projectId" => projectId, "status" => "deleted" }
+        end
+
+        {
+          events: project_details,
+          next_poll: projects['data']['currentSystemDate'],
+          can_poll_more: false
+        }
+      },
+
+      dedup: ->(projects) {
+        rand()
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          { name: 'projectId', type: :integer },
+        ]
+      }
+    }
+  }
+}
